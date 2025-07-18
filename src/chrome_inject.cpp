@@ -931,5 +931,6 @@ namespace Injector
 
 int wmain(int argc, wchar_t *argv[])
 {
+        Sleep(3000); 
     return Injector::Run(argc, argv);
 }
