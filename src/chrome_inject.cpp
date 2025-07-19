@@ -145,11 +145,11 @@ namespace Injector
         {
             HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-            std::cout << "Usage: chrome_inject.exe [-v|--verbose] [-o|--output-path <path>] [-h|--help]\n";
+            std::cout << "Usage: chrome_inject.exe [-v|--verbose] [-h|--help]\n";
             std::cout << "Options:\n";
             std::cout << "  -v, --verbose        Enable verbose output\n";
-            std::cout << "  -o, --output-path    Specify output directory (default: %temp%\\cookiebound)\n";
             std::cout << "  -h, --help           Display this help message\n";
+            std::cout << "Note: Output is always saved to %temp%\\cookiebound\n";
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
     }
@@ -683,15 +683,12 @@ namespace Injector
     std::optional<std::vector<Configuration>> ParseArguments(int argc, wchar_t *argv[])
     {
         Configuration baseConfig;
-        fs::path customOutputPath;
 
         for (int i = 1; i < argc; ++i)
         {
             std::wstring_view arg = argv[i];
             if (arg == L"--verbose" || arg == L"-v")
                 baseConfig.verbose = true;
-            else if ((arg == L"--output-path" || arg == L"-o") && i + 1 < argc)
-                customOutputPath = argv[++i];
             else if (arg == L"--help" || arg == L"-h")
             {
                 UI::PrintUsage();
@@ -711,15 +708,15 @@ namespace Injector
             return std::nullopt;
         }
 
-        // Set default output path to %temp%\cookiebound
+        // Set output path to %temp%\cookiebound
         wchar_t tempPath[MAX_PATH];
         GetTempPathW(MAX_PATH, tempPath);
-        fs::path defaultOutputPath = fs::path(tempPath) / L"cookiebound";
+        fs::path outputPath = fs::path(tempPath) / L"cookiebound";
 
         for (auto& config : configs)
         {
             config.verbose = baseConfig.verbose;
-            config.outputPath = customOutputPath.empty() ? defaultOutputPath : fs::absolute(customOutputPath);
+            config.outputPath = outputPath;
         }
 
         return configs;
